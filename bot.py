@@ -49,11 +49,15 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logging.getLogger("aiobotocore").setLevel(logging.WARNING)
 
+SESSION_STRING = os.environ["SESSION_STRING"]
+
 app = Client(
-    os.path.join(WORK_DIR, "session"),
+    "hls_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
+    session_string=SESSION_STRING,
+    in_memory=True,
     workers=4,
 )
 

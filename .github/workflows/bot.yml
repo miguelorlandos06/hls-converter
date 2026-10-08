@@ -33,6 +33,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
