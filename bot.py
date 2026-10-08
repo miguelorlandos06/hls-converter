@@ -39,6 +39,7 @@ MAX_INPUT_SIZE = 2 * 1024 * 1024 * 1024
 SEG_DURATION = 1
 DOWNLOAD_CHUNK = 1024 * 1024
 QUEUE_WORKERS = 1
+S3_UPLOAD_CONCURRENCY = 16
 
 QUALITIES = [
     ("240p", 426, 240, "300k", "64k"),
@@ -135,11 +136,11 @@ class MsgEditor:
         except Exception:
             pass
 
-    async def final(self, text, markup=None):
+    async def final(self, text, reply_markup=None):
         try:
             await self.bot.edit_message_text(
                 chat_id=self.chat_id, message_id=self.msg_id,
-                text=text, reply_markup=markup,
+                text=text, reply_markup=reply_markup,
             )
         except Exception:
             pass
@@ -178,6 +179,32 @@ async def cancel_user(uid):
         return "active"
     user_pending.pop(uid, None)
     return "queued"
+
+
+
+async def upload_all_parallel(files, out_dir, remote_prefix, editor, total_files, job):
+    """Sube todos los archivos a S3 en paralelo, con control de concurrencia."""
+    sem = asyncio.Semaphore(S3_UPLOAD_CONCURRENCY)
+    uploaded = {"count": 0}
+    lock = asyncio.Lock()
+
+    async def upload_one(f):
+        if job.cancelled:
+            raise asyncio.CancelledError()
+        rel = f.relative_to(out_dir).as_posix()
+        async with sem:
+            try:
+                await s3_put(str(f), f"{remote_prefix}/{rel}")
+            except Exception as e:
+                log.warning(f"Error subiendo {rel}: {e}")
+            async with lock:
+                uploaded["count"] += 1
+                n = uploaded["count"]
+                if n % 20 == 0:
+                    await editor.edit(f"Subiendo... {n}/{total_files}")
+
+    await asyncio.gather(*(upload_one(f) for f in files))
+    return uploaded["count"]
 
 
 async def process(job, bot):
@@ -280,18 +307,16 @@ async def process(job, bot):
         remote_prefix = f"hls/{job.job_id}"
         files = sorted(f for f in out_dir.rglob("*") if f.is_file())
         total_files = len(files)
-        uploaded = 0
-        for f in files:
-            if job.cancelled:
-                raise asyncio.CancelledError()
-            rel = f.relative_to(out_dir).as_posix()
-            try:
-                await s3_put(str(f), f"{remote_prefix}/{rel}")
-            except Exception as e:
-                log.warning(f"Error subiendo {rel}: {e}")
-            uploaded += 1
-            if uploaded % 20 == 0:
-                await editor.edit(f"Subiendo... {uploaded}/{total_files}")
+
+        if job.cancelled:
+            raise asyncio.CancelledError()
+
+        await upload_all_parallel(
+            files, out_dir, remote_prefix, editor, total_files, job
+        )
+
+        if job.cancelled:
+            raise asyncio.CancelledError()
 
         master_url = f"{S3_ENDPOINT}/{S3_BUCKET}/{remote_prefix}/master.m3u8"
         total_bytes = sum(f.stat().st_size for f in files)
