@@ -49,7 +49,7 @@ jobs:
               -d '{"ref":"main"}'
           ) &
           DISPATCH_PID=$!
-          timeout 5h45m python bot.py || true
+          timeout 20700 python bot.py || true
           kill $DISPATCH_PID 2>/dev/null || true
 
       - name: Cleanup
