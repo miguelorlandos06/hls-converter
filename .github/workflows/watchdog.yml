@@ -1,0 +1,33 @@
+name: Watchdog
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check active runs
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          COUNT=$(curl -s \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/bot.yml/runs?status=in_progress" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('total_count',0))")
+          echo "Runs activos: $COUNT"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "Sin runs activos, disparando"
+            curl -s -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPO}/actions/workflows/bot.yml/dispatches" \
+              -d '{"ref":"main"}'
+          else
+            echo "Ya hay run activo"
+          fi

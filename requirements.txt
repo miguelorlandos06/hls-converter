@@ -1,0 +1,6 @@
+pyrogram
+tgcrypto
+aiohttp
+aiofiles
+aioboto3
+boto3
