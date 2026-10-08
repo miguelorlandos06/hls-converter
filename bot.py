@@ -45,6 +45,7 @@ QUALITIES = [
     ("240p", 426, 240, "300k", "64k"),
     ("360p", 640, 360, "700k", "96k"),
     ("480p", 854, 480, "1200k", "128k"),
+    ("720p", 1280, 720, "2500k", "128k"),
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
