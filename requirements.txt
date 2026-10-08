@@ -1,5 +1,4 @@
-pyrogram
-tgcrypto
+python-telegram-bot[job-queue]>=21.0
 aiohttp
 aiofiles
 aioboto3

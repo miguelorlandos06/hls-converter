@@ -15,12 +15,18 @@ import aioboto3
 from botocore import UNSIGNED
 from botocore.config import Config as BotoConfig
 
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
+API_ID = int(os.environ.get("API_ID", "0"))
+API_HASH = os.environ.get("API_HASH", "")
 
 S3_ENDPOINT = "https://s3.todus.cu"
 S3_BUCKET = "stream"
@@ -40,26 +46,11 @@ QUALITIES = [
     ("480p", 854, 480, "1200k", "128k"),
 ]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger("bot")
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logging.getLogger("aiobotocore").setLevel(logging.WARNING)
-
-SESSION_STRING = os.environ["SESSION_STRING"]
-
-app = Client(
-    "hls_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    session_string=SESSION_STRING,
-    in_memory=True,
-    workers=4,
-)
 
 _s3_config = BotoConfig(
     signature_version=UNSIGNED,
@@ -122,7 +113,8 @@ async def detect_fps(path):
 
 
 class MsgEditor:
-    def __init__(self, chat_id, msg_id):
+    def __init__(self, bot, chat_id, msg_id):
+        self.bot = bot
         self.chat_id = chat_id
         self.msg_id = msg_id
         self.last = 0.0
@@ -135,7 +127,9 @@ class MsgEditor:
         if text == self.last_text and not force:
             return
         try:
-            await app.edit_message_text(self.chat_id, self.msg_id, text)
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id, message_id=self.msg_id, text=text,
+            )
             self.last = now
             self.last_text = text
         except Exception:
@@ -143,8 +137,9 @@ class MsgEditor:
 
     async def final(self, text, markup=None):
         try:
-            await app.edit_message_text(
-                self.chat_id, self.msg_id, text, reply_markup=markup,
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id, message_id=self.msg_id,
+                text=text, reply_markup=markup,
             )
         except Exception:
             pass
@@ -185,12 +180,12 @@ async def cancel_user(uid):
     return "queued"
 
 
-async def process(job):
+async def process(job, bot):
     work = Path(WORK_DIR) / job.job_id
     work.mkdir(parents=True, exist_ok=True)
     input_file = work / "input.mp4"
     out_dir = work / "out"
-    editor = MsgEditor(job.chat_id, job.msg_id)
+    editor = MsgEditor(bot, job.chat_id, job.msg_id)
 
     try:
         await editor.edit("Descargando video...", force=True)
@@ -321,14 +316,14 @@ async def process(job):
         shutil.rmtree(work, ignore_errors=True)
 
 
-async def worker(wid):
+async def worker(wid, bot):
     log.info(f"Worker {wid} listo")
     while True:
         job = await queue.get()
         try:
             if job.cancelled:
                 continue
-            job.task = asyncio.create_task(process(job))
+            job.task = asyncio.create_task(process(job, bot))
             try:
                 await job.task
             except asyncio.CancelledError:
@@ -341,12 +336,10 @@ async def worker(wid):
 
 
 URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
-SKIP = ["start", "cancel", "status"]
 
 
-@app.on_message(filters.command("start"))
-async def cmd_start(client, message):
-    await message.reply_text(
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
         "HLS Converter Bot\n\n"
         "Enviame un enlace directo a un video y lo convierto a HLS:\n\n"
         "240p / 360p / 480p, segmentos .m4s de 1s\n"
@@ -356,38 +349,35 @@ async def cmd_start(client, message):
     )
 
 
-@app.on_message(filters.command("cancel"))
-async def cmd_cancel(client, message):
-    r = await cancel_user(message.from_user.id)
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    r = await cancel_user(update.effective_user.id)
     if r == "none":
-        await message.reply_text("Sin trabajos.")
+        await update.message.reply_text("Sin trabajos.")
     elif r == "active":
-        await message.reply_text("Cancelando...")
+        await update.message.reply_text("Cancelando...")
     else:
-        await message.reply_text("Removido de la cola.")
+        await update.message.reply_text("Removido de la cola.")
 
 
-@app.on_message(filters.command("status"))
-async def cmd_status(client, message):
-    uid = message.from_user.id
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     if uid in user_pending:
-        await message.reply_text(f"Job activo. Cola: {queue.qsize()}")
+        await update.message.reply_text(f"Job activo. Cola: {queue.qsize()}")
     else:
-        await message.reply_text(f"Sin trabajos. Cola: {queue.qsize()}")
+        await update.message.reply_text(f"Sin trabajos. Cola: {queue.qsize()}")
 
 
-@app.on_message(filters.text & ~filters.command(SKIP))
-async def handle_url(client, message):
-    uid = message.from_user.id
-    m = URL_RE.search(message.text.strip())
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    m = URL_RE.search(update.message.text.strip())
     if not m:
-        await message.reply_text("Enviame un enlace a un video.")
+        await update.message.reply_text("Enviame un enlace a un video.")
         return
     if uid in user_pending:
-        await message.reply_text("Ya tienes un trabajo. /status o /cancel")
+        await update.message.reply_text("Ya tienes un trabajo. /status o /cancel")
         return
-    status = await message.reply_text("Aceptado, en cola...")
-    job = Job(uid, message.chat.id, status.id, m.group(0))
+    status = await update.message.reply_text("Aceptado, en cola...")
+    job = Job(uid, update.effective_chat.id, status.message_id, m.group(0))
     try:
         pos = await enqueue(job)
     except ValueError:
@@ -399,16 +389,27 @@ async def handle_url(client, message):
         await status.edit_text(f"En cola - posicion #{pos}")
 
 
-async def main():
+async def post_init(application):
     for i in range(QUEUE_WORKERS):
-        asyncio.create_task(worker(i))
-    await app.start()
+        asyncio.create_task(worker(i, application.bot))
     log.info("Bot listo")
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await app.stop()
+
+
+def main():
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("cancel", cmd_cancel))
+    application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url)
+    )
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
